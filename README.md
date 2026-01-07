@@ -83,6 +83,13 @@ To force cross binaries: `make CROSS=i686-elf`
 - `boot/`: also contains the linker script (linker.ld) and a couple of freestanding helpers used by the build
 - `build/`: build output (ISO + ELF)
 
+## Contributing
+Contributions are welcome 👊  
+The project is still early-stage and intentionally minimal, so small PRs are the best way to help.
+
+If you want to contribute, start here: **CONTRIBUTING.md**  
+You can also check Issues labeled `good first issue` / `help wanted`, or open a Discussion if you want to propose something.
+
 ## Final note
 
 Personal, open-source, work-in-progress. I’m building pieces as I learn them—the goal is understanding, not chasing modern-OS feature lists
