@@ -3,7 +3,9 @@ package shell
 import (
 	"unsafe"
 
+	"github.com/dmarro89/go-dav-os/drivers/ata"
 	"github.com/dmarro89/go-dav-os/fs"
+	"github.com/dmarro89/go-dav-os/fs/fat16"
 	"github.com/dmarro89/go-dav-os/mem"
 	"github.com/dmarro89/go-dav-os/terminal"
 )
@@ -22,6 +24,7 @@ var (
 	getTicks func() uint64
 	tmpName  [16]byte
 	tmpData  [4096]byte
+	diskBuf  [512]byte
 
 	// History ring buffer
 	// historyBuf stores the content of the commands
@@ -157,7 +160,7 @@ func execute() {
 	}
 
 	if matchLiteral(cmdStart, cmdEnd, "help") {
-		terminal.Print("Commands: help, clear, echo, ticks, mem, mmap, pfa, alloc, free, ls, write, cat, rm, stat, version, history\n")
+		terminal.Print("Commands: help, clear, echo, ticks, mem, mmap, pfa, alloc, free, ls, write, cat, rm, stat, version, history, disk, fatinit, fatformat, fatinfo, fatls, fatcreate, fatread\n")
 		return
 	}
 
@@ -437,6 +440,206 @@ func execute() {
 		printHexU64(page)
 		terminal.Print(" size=")
 		printUint(size)
+		terminal.PutRune('\n')
+		return
+	}
+
+	if matchLiteral(cmdStart, cmdEnd, "disk") {
+		a1s, a1e, ok := nextArg(cmdEnd, end)
+		if !ok {
+			terminal.Print("Usage: disk <read|write> <lba> [text]\n")
+			return
+		}
+
+		if matchLiteral(a1s, a1e, "read") {
+			a2s, a2e, ok := nextArg(a1e, end)
+			if !ok {
+				terminal.Print("disk read: missing lba\n")
+				return
+			}
+
+			lba := 0
+			// Try hex then dec
+			vHex, okHex := parseHex64(a2s, a2e)
+			if okHex {
+				lba = int(vHex)
+			} else {
+				vDec, okDec := parseDec(a2s, a2e)
+				if !okDec {
+					terminal.Print("disk read: invalid lba\n")
+					return
+				}
+				lba = vDec
+			}
+
+			if ata.ReadSector(uint32(lba), &diskBuf) {
+				terminal.Print("Read Sector ")
+				printUint(uint64(lba))
+				terminal.Print(" OK\n")
+				dumpMemory(uint64(uintptr(unsafe.Pointer(&diskBuf[0]))), 512)
+			} else {
+				terminal.Print("Read Failed\n")
+			}
+			return
+		}
+
+		if matchLiteral(a1s, a1e, "write") {
+			a2s, a2e, ok := nextArg(a1e, end)
+			if !ok {
+				terminal.Print("disk write: missing lba\n")
+				return
+			}
+			lba, ok := parseDec(a2s, a2e)
+			if !ok {
+				// try hex if needed, but dec is fine
+				vHex, okHex := parseHex64(a2s, a2e)
+				if okHex {
+					lba = int(vHex)
+				} else {
+					terminal.Print("disk write: invalid lba\n")
+					return
+				}
+			}
+
+			msgStart := trimLeft(a2e, end)
+			// Clear diskBuf before writing to avoid stale data
+			for i := 0; i < 512; i++ {
+				diskBuf[i] = 0
+			}
+			idx := 0
+			for i := msgStart; i < end && idx < 512; i++ {
+				diskBuf[idx] = lineBuf[i]
+				idx++
+			}
+
+			if ata.WriteSector(uint32(lba), &diskBuf) {
+				terminal.Print("Write Sector ")
+				printUint(uint64(lba))
+				terminal.Print(" OK\n")
+			} else {
+				terminal.Print("Write Failed\n")
+			}
+			return
+		}
+	}
+
+	if matchLiteral(cmdStart, cmdEnd, "fatinit") {
+		if fat16.Init() {
+			terminal.Print("FAT16 Initialized\n")
+		} else {
+			terminal.Print("FAT16 Init Failed\n")
+		}
+		return
+	}
+
+	if matchLiteral(cmdStart, cmdEnd, "fatformat") {
+		if fat16.Format() {
+			terminal.Print("FAT16 Formatted\n")
+		} else {
+			terminal.Print("FAT16 Format Failed\n")
+		}
+		return
+	}
+
+	if matchLiteral(cmdStart, cmdEnd, "fatinfo") {
+		fat16.Info()
+		return
+	}
+
+	if matchLiteral(cmdStart, cmdEnd, "fatls") {
+		fat16.ListDir()
+		return
+	}
+
+	if matchLiteral(cmdStart, cmdEnd, "fatcreate") {
+		// Usage: fatcreate <filename> <content>
+		a1s, a1e, ok := nextArg(cmdEnd, end)
+		if !ok {
+			terminal.Print("Usage: fatcreate <filename> <content>\n")
+			return
+		}
+
+		// Parse filename (max 8 chars, no extension for simplicity)
+		var fname [8]byte
+		var fext [3]byte
+		for i := 0; i < 8; i++ {
+			fname[i] = ' '
+		}
+		for i := 0; i < 3; i++ {
+			fext[i] = ' '
+		}
+
+		nameLen := a1e - a1s
+		if nameLen > 8 {
+			nameLen = 8
+		}
+		for i := 0; i < nameLen; i++ {
+			c := lineBuf[a1s+i]
+			if c >= 'a' && c <= 'z' {
+				c = c - 'a' + 'A' // Uppercase
+			}
+			fname[i] = c
+		}
+
+		// Get content
+		msgStart := trimLeft(a1e, end)
+		var dataBuf [512]byte
+		// Clear dataBuf before writing to avoid stale data
+		for i := 0; i < 512; i++ {
+			dataBuf[i] = 0
+		}
+		idx := 0
+		for i := msgStart; i < end && idx < 512; i++ {
+			dataBuf[idx] = lineBuf[i]
+			idx++
+		}
+
+		if fat16.CreateFile(&fname, &fext, &dataBuf, uint32(idx)) {
+			terminal.Print("File created\n")
+		} else {
+			terminal.Print("Failed to create file\n")
+		}
+		return
+	}
+
+	if matchLiteral(cmdStart, cmdEnd, "fatread") {
+		// Usage: fatread <filename>
+		a1s, a1e, ok := nextArg(cmdEnd, end)
+		if !ok {
+			terminal.Print("Usage: fatread <filename>\n")
+			return
+		}
+
+		var fname [8]byte
+		var fext [3]byte
+		for i := 0; i < 8; i++ {
+			fname[i] = ' '
+		}
+		for i := 0; i < 3; i++ {
+			fext[i] = ' '
+		}
+
+		nameLen := a1e - a1s
+		if nameLen > 8 {
+			nameLen = 8
+		}
+		for i := 0; i < nameLen; i++ {
+			c := lineBuf[a1s+i]
+			if c >= 'a' && c <= 'z' {
+				c = c - 'a' + 'A'
+			}
+			fname[i] = c
+		}
+
+		size, ok := fat16.ReadFile(&fname, &fext, &diskBuf)
+		if !ok {
+			terminal.Print("File not found\n")
+			return
+		}
+
+		for i := uint32(0); i < size && i < 512; i++ {
+			terminal.PutRune(rune(diskBuf[i]))
+		}
 		terminal.PutRune('\n')
 		return
 	}
