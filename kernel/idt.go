@@ -45,7 +45,6 @@ func GetCR2() uint64
 func getIRQ0StubAddr() uint64
 func getIRQ1StubAddr() uint64
 
-
 func GPFaultHandler(tf *syscall.TrapFrame) {
 	if tf.CS&3 == 3 {
 		terminal.Print("\n#GP in user mode\n")
