@@ -206,6 +206,7 @@ func PrintInt(v int) {
 		PutRune(rune(buf[i]))
 	}
 }
+
 // PrintHex prints a 64-bit value in hexadecimal format
 func PrintHex(v uint64) {
 	Print("0x")

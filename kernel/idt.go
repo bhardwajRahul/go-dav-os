@@ -45,10 +45,6 @@ func GetCR2() uint64
 func getIRQ0StubAddr() uint64
 func getIRQ1StubAddr() uint64
 
-// syscalls
-func TriggerSysWrite(buf *byte, n uint32)
-func TriggerSysExit(status uint32)
-func TriggerSysGetTicks() uint64
 
 func GPFaultHandler(tf *syscall.TrapFrame) {
 	if tf.CS&3 == 3 {
