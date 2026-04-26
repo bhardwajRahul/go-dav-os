@@ -355,6 +355,7 @@ go_0kernel.SyscallEntryStub:
 	pushq __syscall_saved_user_rflags(%rip)
 	pushq $0x1B
 	pushq __syscall_saved_user_rip(%rip)
+	pushq $0            # dummy error code
 	PUSH_REGS
 	mov %rsp, %rbp
 	andq $-16, %rsp
@@ -363,6 +364,7 @@ go_0kernel.SyscallEntryStub:
 	call  go_0kernel.SyscallHandler
 	mov %rbp, %rsp
 	POP_REGS
+	addq $8, %rsp       # pop dummy error code
 	iretq
 .size go_0kernel.SyscallEntryStub, . - go_0kernel.SyscallEntryStub
 
