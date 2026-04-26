@@ -5,7 +5,6 @@ package kernel
 import (
 	"unsafe"
 
-	"github.com/dmarro89/go-dav-os/kernel/scheduler"
 	"github.com/dmarro89/go-dav-os/kernel/syscall"
 	"github.com/dmarro89/go-dav-os/terminal"
 )
@@ -49,7 +48,7 @@ func GPFaultHandler(tf *syscall.TrapFrame) {
 	if tf.CS&3 == 3 {
 		terminal.Print("\n#GP in user mode\n")
 		printFaultDiagnostics("General Protection Fault", tf)
-		scheduler.Exit()
+		ReturnToKernel()
 	} else {
 		terminal.Print("\n#GP in kernel mode\n")
 		printFaultDiagnostics("General Protection Fault", tf)
@@ -66,7 +65,7 @@ func PFaultHandler(tf *syscall.TrapFrame) {
 		terminal.Print("CR2: ")
 		terminal.PrintHex(cr2)
 		terminal.Print("\n")
-		scheduler.Exit()
+		ReturnToKernel()
 	} else {
 		terminal.Print("\n#PF in kernel mode\n")
 		printFaultDiagnostics("Page Fault", tf)
