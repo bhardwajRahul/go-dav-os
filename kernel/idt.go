@@ -6,6 +6,7 @@ import (
 	"unsafe"
 
 	"github.com/dmarro89/go-dav-os/kernel/scheduler"
+	"github.com/dmarro89/go-dav-os/kernel/syscall"
 	"github.com/dmarro89/go-dav-os/terminal"
 )
 
@@ -14,36 +15,6 @@ const (
 	intGateKernelFlags = 0x8E // P=1, DPL=0, interrupt gate
 	intGateUserFlags   = 0xEE // P=1, DPL=3, interrupt gate (syscall)
 )
-
-const (
-	SYS_WRITE    = 1
-	SYS_EXIT     = 2
-	SYS_GETTICKS = 3
-)
-
-type TrapFrame struct {
-	R15       uint64
-	R14       uint64
-	R13       uint64
-	R12       uint64
-	R11       uint64
-	R10       uint64
-	R9        uint64
-	R8        uint64
-	RDI       uint64
-	RSI       uint64
-	RBP       uint64
-	RBX       uint64
-	RDX       uint64
-	RCX       uint64
-	RAX       uint64
-	ErrorCode uint64
-	RIP       uint64
-	CS        uint64
-	RFLAGS    uint64
-	UserRSP   uint64
-	UserSS    uint64
-}
 
 // 16 bytes (x86_64 IDT entry)
 type idtEntry struct {
@@ -79,28 +50,7 @@ func TriggerSysWrite(buf *byte, n uint32)
 func TriggerSysExit(status uint32)
 func TriggerSysGetTicks() uint64
 
-func Int80Handler(tf *TrapFrame) {
-	switch uint32(tf.RAX) {
-	case SYS_WRITE:
-		fd := tf.RBX
-		buf := uintptr(tf.RCX)
-		n := tf.RDX
-		tf.RAX = sysWrite(fd, buf, n)
-	case SYS_EXIT:
-		status := int(tf.RBX)
-		terminal.Print("Process exited with status ")
-		terminal.PrintInt(status)
-		terminal.Print("\n")
-		scheduler.Exit()
-	case SYS_GETTICKS:
-		tf.RAX = ticks
-	default:
-		terminal.Print("unknown syscall\n")
-		tf.RAX = ^uint64(0) // return -1
-	}
-}
-
-func GPFaultHandler(tf *TrapFrame) {
+func GPFaultHandler(tf *syscall.TrapFrame) {
 	if tf.CS&3 == 3 {
 		terminal.Print("\n#GP in user mode\n")
 		printFaultDiagnostics("General Protection Fault", tf)
@@ -113,7 +63,7 @@ func GPFaultHandler(tf *TrapFrame) {
 	}
 }
 
-func PFaultHandler(tf *TrapFrame) {
+func PFaultHandler(tf *syscall.TrapFrame) {
 	cr2 := GetCR2()
 	if tf.CS&3 == 3 {
 		terminal.Print("\n#PF in user mode\n")
@@ -133,7 +83,7 @@ func PFaultHandler(tf *TrapFrame) {
 	}
 }
 
-func printFaultDiagnostics(name string, tf *TrapFrame) {
+func printFaultDiagnostics(name string, tf *syscall.TrapFrame) {
 	terminal.Print("Fault: ")
 	terminal.Print(name)
 	terminal.Print("\nRIP: ")
@@ -141,18 +91,6 @@ func printFaultDiagnostics(name string, tf *TrapFrame) {
 	terminal.Print("\nError Code: ")
 	terminal.PrintHex(tf.ErrorCode)
 	terminal.Print("\n")
-}
-
-func sysWrite(fd uint64, buf uintptr, n uint64) uint64 {
-	if fd != 1 {
-		return ^uint64(0)
-	}
-
-	for i := uint64(0); i < n; i++ {
-		b := *(*byte)(unsafe.Pointer(buf + uintptr(i)))
-		terminal.PutRune(rune(b))
-	}
-	return n
 }
 
 func packIDTR(limit uint16, base uint64, out *[10]byte) {
