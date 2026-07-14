@@ -137,10 +137,10 @@ func validatePlan(plan Plan) ValidationResult {
 	}
 	for i := 0; i < plan.ActionCount; i++ {
 		action := plan.Actions[i]
-		if !action.Kind.Valid() {
+		if !action.Kind.Valid() || plan.Planner == PlannerModeLLM && !allowedPlanAction(action.Kind) {
 			return ValidationResult{OK: false, Reason: MessagePlanContainsUnsupportedAction}
 		}
-		if action.Risk != action.Kind.ExpectedRisk() {
+		if !validRiskLevel(action.Risk) {
 			return ValidationResult{OK: false, Reason: MessageActionRiskInvalid}
 		}
 		if action.TargetLen < 0 || action.TargetLen > MaxNameLen {
@@ -149,8 +149,42 @@ func validatePlan(plan Plan) ValidationResult {
 		if action.DataLen < 0 || action.DataLen > MaxDataLen {
 			return ValidationResult{OK: false, Reason: MessageActionDataInvalid}
 		}
+		if action.DataLen != 0 {
+			return ValidationResult{OK: false, Reason: MessageActionDataInvalid}
+		}
+		if actionRequiresTarget(action.Kind) && action.TargetLen == 0 {
+			return ValidationResult{OK: false, Reason: MessageActionTargetInvalid}
+		}
+		if plan.Planner == PlannerModeLLM && actionRisk(action.Kind) != action.Risk {
+			return ValidationResult{OK: false, Reason: MessageActionRiskInvalid}
+		}
 	}
 	return ValidationResult{OK: true, Reason: MessageOK}
+}
+
+func allowedPlanAction(kind ActionKind) bool {
+	switch kind {
+	case ActionListFiles, ActionReadFile, ActionDeleteFile, ActionStatFile, ActionShowHelp, ActionShowHistory, ActionShowVersion, ActionShowTicks, ActionShowMemoryMap, ActionSetMode:
+		return true
+	default:
+		return false
+	}
+}
+
+func actionRequiresTarget(kind ActionKind) bool {
+	switch kind {
+	case ActionReadFile, ActionDeleteFile, ActionStatFile:
+		return true
+	default:
+		return false
+	}
+}
+
+func actionRisk(kind ActionKind) RiskLevel {
+	if kind == ActionDeleteFile {
+		return RiskRisky
+	}
+	return RiskSafe
 }
 
 func validRiskLevel(risk RiskLevel) bool {

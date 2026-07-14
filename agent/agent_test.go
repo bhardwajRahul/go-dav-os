@@ -141,6 +141,37 @@ func TestRuntimeReportsMissingExecutor(t *testing.T) {
 	}
 }
 
+func TestRunActionExecutesTypedWriteAction(t *testing.T) {
+	executed := false
+	runtime := NewDeterministicAgent(AllowedActionExecutor{
+		WriteFile: func(action Action, context *Context) ActionResult {
+			executed = true
+			return ActionResult{OK: true, Message: MessageOK}
+		},
+	})
+
+	response := runtime.RunAction(ActionWriteFile, IntentWriteFile, RiskSafe, nil, 0, nil)
+	if !response.Result.OK || !executed {
+		t.Fatalf("expected typed write action to execute, got %+v", response.Result)
+	}
+}
+
+func TestRunActionExecutesConfirmedDeleteAction(t *testing.T) {
+	executed := false
+	runtime := NewDeterministicAgent(AllowedActionExecutor{
+		DeleteFile: func(action Action, context *Context) ActionResult {
+			executed = true
+			return ActionResult{OK: true, Message: MessageOK}
+		},
+	})
+	target := [MaxNameLen]byte{'n', 'o', 't', 'e', 's'}
+
+	response := runtime.RunAction(ActionDeleteFile, IntentDeleteFile, RiskSafe, &target, 5, nil)
+	if !response.Result.OK || !executed {
+		t.Fatalf("expected confirmed delete action to execute, got %+v", response.Result)
+	}
+}
+
 func TestRuntimeStopsOnExecutorFailure(t *testing.T) {
 	response := NewDeterministicAgent(
 		AllowedActionExecutor{
@@ -265,8 +296,8 @@ func TestDefaultValidatorRejectsMalformedPlans(t *testing.T) {
 		{name: "too many actions", plan: Plan{ActionCount: MaxActions + 1}},
 		{name: "target too long", plan: planWithAction(Action{Kind: ActionReadFile, Risk: RiskSafe, TargetLen: MaxNameLen + 1})},
 		{name: "negative target", plan: planWithAction(Action{Kind: ActionReadFile, Risk: RiskSafe, TargetLen: -1})},
-		{name: "data too long", plan: planWithAction(Action{Kind: ActionWriteFile, Risk: RiskRisky, DataLen: MaxDataLen + 1})},
-		{name: "negative data", plan: planWithAction(Action{Kind: ActionWriteFile, Risk: RiskRisky, DataLen: -1})},
+		{name: "data too long", plan: planWithAction(Action{Kind: ActionReadFile, Risk: RiskSafe, TargetLen: 1, DataLen: MaxDataLen + 1})},
+		{name: "negative data", plan: planWithAction(Action{Kind: ActionReadFile, Risk: RiskSafe, TargetLen: 1, DataLen: -1})},
 	}
 
 	for _, tt := range tests {
@@ -276,6 +307,105 @@ func TestDefaultValidatorRejectsMalformedPlans(t *testing.T) {
 				t.Fatalf("expected malformed plan to be rejected")
 			}
 		})
+	}
+}
+
+func TestDefaultValidatorRejectsUnsafePlanShapes(t *testing.T) {
+	tests := []struct {
+		name   string
+		plan   Plan
+		reason MessageKind
+	}{
+		{
+			name:   "action outside allowlist",
+			plan:   llmPlanWithAction(Action{Kind: ActionWriteFile, Risk: RiskSafe}),
+			reason: MessagePlanContainsUnsupportedAction,
+		},
+		{
+			name:   "missing read target",
+			plan:   llmPlanWithAction(Action{Kind: ActionReadFile, Risk: RiskSafe}),
+			reason: MessageActionTargetInvalid,
+		},
+		{
+			name:   "missing delete target",
+			plan:   llmPlanWithAction(Action{Kind: ActionDeleteFile, Risk: RiskRisky}),
+			reason: MessageActionTargetInvalid,
+		},
+		{
+			name:   "delete marked safe",
+			plan:   llmPlanWithTargetAction(ActionDeleteFile, RiskSafe, "notes"),
+			reason: MessageActionRiskInvalid,
+		},
+		{
+			name:   "read marked risky",
+			plan:   llmPlanWithTargetAction(ActionReadFile, RiskRisky, "notes"),
+			reason: MessageActionRiskInvalid,
+		},
+		{
+			name: "raw action data",
+			plan: llmPlanWithAction(Action{
+				Kind:      ActionReadFile,
+				Risk:      RiskSafe,
+				TargetLen: 1,
+				DataLen:   1,
+			}),
+			reason: MessageActionDataInvalid,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := DefaultValidator{}.Validate(tt.plan)
+			if result.OK {
+				t.Fatalf("expected invalid plan to be rejected")
+			}
+			if result.Reason != tt.reason {
+				t.Fatalf("validation reason = %q, expected %q", result.Reason, tt.reason)
+			}
+		})
+	}
+}
+
+func TestDefaultValidatorAllowsSafeNoTargetActions(t *testing.T) {
+	actions := [...]ActionKind{
+		ActionListFiles,
+		ActionShowHelp,
+		ActionShowHistory,
+		ActionShowVersion,
+		ActionShowTicks,
+		ActionShowMemoryMap,
+		ActionSetMode,
+	}
+
+	for _, kind := range actions {
+		plan := planWithAction(Action{Kind: kind, Risk: RiskSafe})
+		if result := (DefaultValidator{}).Validate(plan); !result.OK {
+			t.Fatalf("expected action %v to validate, got %q", kind, result.Reason)
+		}
+	}
+}
+
+func TestRuntimeRejectsInvalidLLMPlanBeforeExecution(t *testing.T) {
+	executed := false
+	runtime := NewDeterministicAgent(AllowedActionExecutor{
+		ReadFile: func(action Action, context *Context) ActionResult {
+			executed = true
+			return ActionResult{OK: true, Message: MessageFileRead}
+		},
+	})
+
+	response := runtime.runPlan(singleActionPlan(PlannerModeLLM, IntentReadFile, ActionReadFile, RiskSafe), nil)
+	if response.Result.OK {
+		t.Fatalf("expected invalid LLM plan to fail")
+	}
+	if response.Result.Message != MessageActionTargetInvalid {
+		t.Fatalf("unexpected validation message: %q", response.Result.Message)
+	}
+	if response.Safety.Status != SafetyRejected || response.Safety.Reason != MessageValidationFailed {
+		t.Fatalf("unexpected safety decision: %+v", response.Safety)
+	}
+	if executed {
+		t.Fatalf("executor ran for invalid LLM plan")
 	}
 }
 
@@ -507,22 +637,27 @@ func planWithAction(action Action) Plan {
 	return plan
 }
 
-func TestValidatorRejectsRiskyActionMarkedAsSafe(t *testing.T) {
-	// ActionDeleteFile is risky but the plan marks it as RiskSafe
-	plan := singleActionPlan(PlannerModeLLM, IntentDeleteFile, ActionDeleteFile, RiskSafe)
-	result := DefaultValidator{}.Validate(plan)
-	if result.OK {
-		t.Fatalf("expected plan with risky action marked as safe to be rejected")
+func planWithTargetAction(kind ActionKind, risk RiskLevel, target string) Plan {
+	plan := planWithAction(Action{Kind: kind, Risk: risk})
+	targetLen := len(target)
+	if targetLen > MaxNameLen {
+		targetLen = MaxNameLen
 	}
-	if result.Reason != MessageActionRiskInvalid {
-		t.Fatalf("expected risk invalid reason, got %v", result.Reason)
+	plan.Actions[0].TargetLen = targetLen
+	for i := 0; i < targetLen; i++ {
+		plan.Actions[0].Target[i] = target[i]
 	}
+	return plan
 }
 
-func TestValidatorAcceptsWriteFileAction(t *testing.T) {
-	plan := singleActionPlan(PlannerModeLLM, IntentWriteFile, ActionWriteFile, RiskRisky)
-	result := DefaultValidator{}.Validate(plan)
-	if !result.OK {
-		t.Fatalf("expected ActionWriteFile to be accepted, got %v", result.Reason)
-	}
+func llmPlanWithAction(action Action) Plan {
+	plan := planWithAction(action)
+	plan.Planner = PlannerModeLLM
+	return plan
+}
+
+func llmPlanWithTargetAction(kind ActionKind, risk RiskLevel, target string) Plan {
+	plan := planWithTargetAction(kind, risk, target)
+	plan.Planner = PlannerModeLLM
+	return plan
 }
